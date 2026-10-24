@@ -1197,17 +1197,21 @@ def _parse_product_fallback(product_name: str) -> dict:
             dests = list(dict.fromkeys(match.group(0) for match in re.finditer(pattern, pn)))
 
     dur = None
-    m = re.search(r"(\d+)日(\d+)晚", pn)
+    m = re.search(r"(?<!\d)(\d{1,2})日(\d{1,2})晚(?!\d)", pn)
     if m:
         dur = f"{m.group(1)}日{m.group(2)}晚"
     else:
-        m = re.search(r"(\d+)天(\d+)晚", pn)
+        m = re.search(r"(?<!\d)(\d{1,2})天(\d{1,2})晚(?!\d)", pn)
         if m:
             dur = f"{m.group(1)}天{m.group(2)}晚"
         else:
-            m = re.search(r"(\d+)(?:日|天)游", pn)
+            m = re.search(r"(?<!\d)(\d{1,2})(日|天)游(?!\d)", pn)
             if m:
                 dur = f"{m.group(1)}日游"
+            else:
+                m = re.search(r"(?<!\d)(\d{1,2})(日|天)(?!\d)", pn)
+                if m:
+                    dur = f"{m.group(1)}{m.group(2)}"
     return {"destinations": dests, "duration": dur}
 
 
@@ -1236,6 +1240,21 @@ def _is_complete_title_destination(candidate: str, product_name: str) -> bool:
     return False
 
 
+def _is_complete_title_duration(candidate: str, product_name: str) -> bool:
+    """Accept only a full itinerary-duration form, never a number/year substring."""
+    candidate = re.sub(r"\s+", "", (candidate or ""))
+    if not re.fullmatch(r"\d{1,2}(?:日|天)(?:\d{1,2}晚)?|\d{1,2}(?:日|天)游", candidate):
+        return False
+    title = re.sub(r"\s+", "", product_name or "")
+    for match in re.finditer(re.escape(candidate), title):
+        before = title[match.start() - 1] if match.start() else ""
+        after = title[match.end()] if match.end() < len(title) else ""
+        if before.isdigit() or after.isdigit():
+            continue
+        return True
+    return False
+
+
 def parse_product(product_name: str) -> dict:
     """Extract only product facts grounded in the supplied, untrusted title."""
     if not product_name or not product_name.strip():
@@ -1256,7 +1275,6 @@ def parse_product(product_name: str) -> dict:
             ],
         )
         data = json.loads(_extract_json(resp.choices[0].message.content))
-        normalized_title = re.sub(r"\s+", "", pn).casefold()
         fallback = _parse_product_fallback(pn)
         raw_destinations = data.get("destinations") or []
         if not isinstance(raw_destinations, list):
@@ -1273,8 +1291,7 @@ def parse_product(product_name: str) -> dict:
         duration = None
         if isinstance(raw_duration, str) and raw_duration.strip():
             candidate_duration = raw_duration.strip()
-            normalized_duration = re.sub(r"\s+", "", candidate_duration).casefold()
-            if normalized_duration in normalized_title:
+            if _is_complete_title_duration(candidate_duration, pn):
                 duration = candidate_duration
 
         # 若目录可识别出标题中的目的地，以完整目录结果为准。模型漏掉的

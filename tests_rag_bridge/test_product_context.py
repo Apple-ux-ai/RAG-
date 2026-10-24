@@ -118,6 +118,38 @@ class RagProductContextTests(unittest.TestCase):
 
         self.assertEqual(result, {"destinations": [], "duration": None})
 
+    def test_parse_product_uses_full_day_count_when_model_returns_a_suffix(self):
+        title = "巴厘岛16天深度游"
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"destinations":["巴厘岛"],"duration":"6天"}'
+            ))]
+        )
+        with patch.object(
+            customer_service.client.chat.completions,
+            "create",
+            return_value=completion,
+        ):
+            result = customer_service.parse_product(title)
+
+        self.assertEqual(result, {"destinations": ["巴厘岛"], "duration": "16天"})
+
+    def test_parse_product_does_not_treat_a_year_as_a_duration(self):
+        title = "Bali 2026 family package"
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"destinations":["Bali"],"duration":"2026"}'
+            ))]
+        )
+        with patch.object(
+            customer_service.client.chat.completions,
+            "create",
+            return_value=completion,
+        ):
+            result = customer_service.parse_product(title)
+
+        self.assertEqual(result, {"destinations": ["Bali"], "duration": None})
+
     def test_parse_product_replaces_partial_model_facts_with_complete_catalog_facts(self):
         title = "巴厘岛+科莫多6日5晚私家团"
         completion = SimpleNamespace(

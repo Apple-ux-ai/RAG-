@@ -4,7 +4,7 @@
 
 **Goal:** 将印尼兄弟店铺的产品卡片字段可靠传给 RAG，并避免重复询问已有信息。
 
-**Architecture:** IM 适配器从当前/最近产品卡片提取白名单字段并作为可选 `product_context` 发送。RAG API 校验字段并传给现有客服处理逻辑，优先从目的地目录完整识别商品名中的路线和行程时长；无法识别时才采用模型结果，并要求目的地是标题中的完整词项而非更长单词/中文片段的一部分。出发城市和标签作为单独标注的提示上下文。旧请求不带该字段时保持兼容。
+**Architecture:** IM 适配器从当前/最近产品卡片提取白名单字段并作为可选 `product_context` 发送。RAG API 校验字段并传给现有客服处理逻辑，优先从目的地目录完整识别商品名中的路线和完整行程时长；无法识别时才采用模型结果，并要求目的地是标题中的完整词项、天数是完整行程格式，不接受更长单词/中文片段/年份中的数字。出发城市和标签作为单独标注的提示上下文。旧请求不带该字段时保持兼容。
 
 **Tech Stack:** Python、FastAPI、Pydantic v2、`unittest`、现有 `requests` IM 适配器。
 
@@ -24,9 +24,9 @@
 
 - 无商品上下文的旧请求仍按现有方式处理：`test_authenticated_request_maps_identity_and_normalized_history`。
 - 商品卡片字段缺失时不得补造日期或人数，且出发城市单独标注：`test_departure_city_is_labelled_separately_and_missing_trip_fields_stay_unknown`。
-- 多张产品卡片时选择最近一张：`test_rag_payload_uses_latest_product_card_and_only_product_context_allowlist`。
+- 多张产品卡片时选择最近一张；持久化失败时后续文本仍能使用内存中的最近卡片：`test_rag_payload_uses_latest_product_card_and_only_product_context_allowlist / test_product_card_context_survives_persistence_failure_for_followup_text`。
 - 产品链接、来源备注和会员标签不能进入新字段：`test_rag_payload_uses_latest_product_card_and_only_product_context_allowlist`。
-- 商品标题中的指令不能进入 system prompt，解析结果必须能从标题验证；已知目的地必须完整，不能接受部分目的地/天数字串，也不能把营销后缀识别为目的地：`test_parse_product_keeps_untrusted_title_out_of_system_prompt / test_parse_product_rejects_extracted_facts_absent_from_title / test_parse_product_rejects_partial_uncatalogued_destination_match / test_parse_product_replaces_partial_model_facts_with_complete_catalog_facts / test_parse_product_fallback_drops_marketing_suffix_from_destination`。
+- 商品标题中的指令不能进入 system prompt，解析结果必须能从标题验证；已知目的地和天数必须完整，不能接受部分目的地/天数字串或年份，也不能把营销后缀识别为目的地：`test_parse_product_keeps_untrusted_title_out_of_system_prompt / test_parse_product_rejects_extracted_facts_absent_from_title / test_parse_product_rejects_partial_uncatalogued_destination_match / test_parse_product_replaces_partial_model_facts_with_complete_catalog_facts / test_parse_product_fallback_drops_marketing_suffix_from_destination / test_parse_product_uses_full_day_count_when_model_returns_a_suffix / test_parse_product_does_not_treat_a_year_as_a_duration`。
 
 ---
 
@@ -72,6 +72,7 @@ Expected: all RAG bridge tests pass, including the legacy no-context path.
 **Files:**
 - Modify: `D:\workflow\IM Web Auto\src\reply.py`
 - Test: `D:\workflow\IM Web Auto\tests\test_rag_adapter.py`
+- Test: `D:\workflow\IM Web Auto\tests\test_reply_context_persistence.py`
 
 **Interfaces:**
 - Consumes: the Task 1 `product_context` request field.
@@ -89,13 +90,15 @@ Expected: new assertions fail because the current request has no structured prod
 
 - [x] **Step 3: Add the optional product context to the IM request**
 
-Use `_latest_product_context(msg, old_history)` before truncating history to the API window. Select the current product card or newest historical card as one record; do not fill missing fields from older cards. Copy only `product_id`, `product_name`, `departure_city`, and `product_label`; enforce API length limits and drop overlong values; omit the request field when all four are empty. Leave `history` and send/ACK behavior unchanged.
+Use `_latest_product_context(msg, old_history)` before truncating history to the API window. Select the current product card or newest historical card as one record; do not fill missing fields from older cards. Preserve the product-card message type in the in-memory history fallback when durable persistence fails, so a following text message still finds the last card. Copy only `product_id`, `product_name`, `departure_city`, and `product_label`; enforce API length limits and drop overlong values; omit the request field when all four are empty. Leave send/ACK behavior unchanged.
 
 - [x] **Step 4: Run adapter tests**
 
 Run: `python -m unittest tests.test_rag_adapter tests.test_reply_context_persistence`
 
 Expected: the new field is present for product-card conversations, the latest card wins, and existing history/identity/ACK assertions remain green.
+
+Also verify `test_product_card_context_survives_persistence_failure_for_followup_text` in `test_reply_context_persistence.py` so database write failures do not erase the in-memory card marker.
 
 ### Task 3: Verify the cross-project request contract
 
@@ -117,8 +120,8 @@ Run the RAG suite from the RAG worktree.
 
 Run IM unittest modules from D:\workflow\IM Web Auto with a loader that keeps test paths ahead of the source path. Run test_scenarios.py separately because it executes at import time and is not a unittest module.
 
-Latest verification after parser hardening: RAG suite 35 tests OK; IM unittest modules 133 tests OK with UTF-8 mode. No live IM send was called. The standalone test_scenarios.py script was previously run separately and has seven failing assertions because its FakePage does not satisfy _ensure_live_page().
+Latest verification after final review fixes: RAG suite 37 tests OK; IM unittest modules 134 tests OK with UTF-8 mode. No live IM send was called. The standalone test_scenarios.py script was previously run separately and has seven failing assertions because its FakePage does not satisfy _ensure_live_page().
 
 - [x] **Step 3: Commit the RAG changes to the existing PR branch**
 
-The RAG API, handler, docs, and bridge tests are committed on the existing PR branch (parser hardening commits: `5b65da2` and `1f84db5`). Runtime `data/` files remain unstaged. The IM directory has no Git repository, so its adapter and tests remain in place at `D:\workflow\IM Web Auto`.
+The RAG API, handler, docs, and bridge tests are committed on the existing PR branch, including complete destination/duration parsing. Runtime `data/` files remain unstaged. The IM directory has no Git repository, so its adapter and tests remain in place at `D:\workflow\IM Web Auto`.
