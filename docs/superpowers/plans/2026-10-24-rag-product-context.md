@@ -26,7 +26,7 @@
 - 商品卡片字段缺失时不得补造日期或人数，且出发城市单独标注：`test_departure_city_is_labelled_separately_and_missing_trip_fields_stay_unknown`。
 - 多张产品卡片时选择最近一张：`test_rag_payload_uses_latest_product_card_and_only_product_context_allowlist`。
 - 产品链接、来源备注和会员标签不能进入新字段：`test_rag_payload_uses_latest_product_card_and_only_product_context_allowlist`。
-- 产品字段中即使出现提示词样式文本也只能作为数据：`test_rag_prompt_uses_known_product_data_without_reasking`。
+- 商品标题中的指令不能进入 system prompt，解析结果必须能从标题验证：`test_parse_product_keeps_untrusted_title_out_of_system_prompt / test_parse_product_rejects_extracted_facts_absent_from_title`。
 
 ---
 
@@ -45,7 +45,7 @@
 
 - [x] **Step 1: Write failing request and context tests**
 
-Add tests for forwarding product ID/name to the handler, passing departure city and label as separately labelled context, retaining the existing no-context call-shape test, rejecting unknown/overlong product fields, treating product values as metadata, and leaving absent date/party count unknown.
+Add tests for forwarding product ID/name to the handler, passing departure city and label separately, retaining old no-context behavior, rejecting unknown/overlong API fields, keeping the untrusted title out of the system prompt, validating extracted facts, and leaving absent date/party count unknown.
 
 - [x] **Step 2: Run RAG tests and verify the new tests fail**
 
@@ -59,7 +59,7 @@ Add `RagProductContext` to `api.py`; when provided, pass `product_id`, `product_
 
 - [x] **Step 4: Add known-versus-missing context rules and document the request field**
 
-Ensure the RAG prompt treats destinations/duration from the product name and separately labelled departure city as known, does not ask for them again, treats field values as metadata rather than instructions, and only asks for date/party size when needed and absent. Update the `/v1/chat` schema/example in `API使用文档.md`.
+Ensure the RAG prompt treats destinations/duration from the product name and separately labelled departure city as known, does not ask for them again, treats field values as metadata, and only asks for date/party size when needed and absent. Keep the untrusted product title in a user data message, separate from static extraction instructions, and validate extracted facts against the title. Update the `/v1/chat` schema/example in `API使用文档.md`.
 
 - [x] **Step 5: Run RAG tests**
 
@@ -79,7 +79,7 @@ Expected: all RAG bridge tests pass, including the legacy no-context path.
 
 - [x] **Step 1: Write failing IM adapter tests**
 
-Add tests for a latest product card, a prior stale product card, partial/missing fields, and exclusion of URL, source remark, and membership fields.
+Add tests for latest complete and partial cards, a partial current card, no cross-card field backfill, missing fields, overlong-field filtering, and exclusion of URL, source remark, and membership fields.
 
 - [x] **Step 2: Run adapter tests and verify the new tests fail**
 
@@ -89,7 +89,7 @@ Expected: new assertions fail because the current request has no structured prod
 
 - [x] **Step 3: Add the optional product context to the IM request**
 
-Use `_latest_product_context(msg, old_history)` before truncating history to the API window. Copy only `product_id`, `product_name`, `departure_city`, and `product_label`; omit the request field when all four are empty. Leave `history` and send/ACK behavior unchanged.
+Use `_latest_product_context(msg, old_history)` before truncating history to the API window. Select the current product card or newest historical card as one record; do not fill missing fields from older cards. Copy only `product_id`, `product_name`, `departure_city`, and `product_label`; enforce API length limits and drop overlong values; omit the request field when all four are empty. Leave `history` and send/ACK behavior unchanged.
 
 - [x] **Step 4: Run adapter tests**
 
@@ -117,7 +117,7 @@ Run the RAG suite from the RAG worktree.
 
 Run IM unittest modules from D:\workflow\IM Web Auto with a loader that keeps test paths ahead of the source path. Run test_scenarios.py separately because it executes at import time and is not a unittest module.
 
-Verified: RAG suite 30 tests OK; IM unittest modules 130 tests OK with UTF-8 mode. No live IM send was called. The standalone test_scenarios.py script was run separately and has seven failing assertions because its FakePage does not satisfy _ensure_live_page().
+Verified after review fixes: RAG suite 32 tests OK; IM unittest modules 133 tests OK with UTF-8 mode. No live IM send was called. The standalone test_scenarios.py script was run separately and has seven failing assertions because its FakePage does not satisfy _ensure_live_page().
 
 - [ ] **Step 3: Commit the RAG changes to the existing PR branch**
 
