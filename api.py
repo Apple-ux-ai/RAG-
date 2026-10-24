@@ -15,7 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from main import load_faq, load_banned_words, public_kb_chat, CLOSING_PHRASE, FAQ_FILE, BANNED_WORDS_FILE, client, handle_customer_message
 from message_guard import claim_message, finish_message
-from rag_delivery import DeliveryRecord, DeliveryScope, DeliveryStore, RAG_SAFE_LOGGING
+from rag_delivery import (
+    DeliveryRecord,
+    DeliveryScope,
+    DeliveryStore,
+    RAG_CONCISE_STYLE,
+    RAG_SAFE_LOGGING,
+)
 
 RAG_CHAT_TOKEN = os.getenv("RAG_CHAT_TOKEN", "").strip()
 RAG_TENANT_ID = os.getenv("RAG_TENANT_ID", "indonesia_brother").strip() or "indonesia_brother"
@@ -454,6 +460,7 @@ def rag_chat(
     history = [{"role": item.role, "content": item.content} for item in req.history]
     try:
         safe_log_token = RAG_SAFE_LOGGING.set(True)
+        concise_style_token = RAG_CONCISE_STYLE.set(True)
         try:
             result = handle_customer_message(
                 _rag_user_key(scope),
@@ -463,6 +470,7 @@ def rag_chat(
                 history,
             )
         finally:
+            RAG_CONCISE_STYLE.reset(concise_style_token)
             RAG_SAFE_LOGGING.reset(safe_log_token)
 
         if not isinstance(result, dict):

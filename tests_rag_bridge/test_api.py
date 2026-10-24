@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 import api
 import main as customer_service
-from rag_delivery import DeliveryScope, DeliveryStore
+from rag_delivery import DeliveryScope, DeliveryStore, RAG_CONCISE_STYLE
 
 
 class RagChatApiTests(unittest.TestCase):
@@ -74,6 +74,27 @@ class RagChatApiTests(unittest.TestCase):
             {"role": "user", "content": "We are traveling to Bali."},
             {"role": "assistant", "content": "What dates are you planning?"},
         ])
+
+    def test_rag_generation_runs_with_concise_style_enabled(self):
+        observed_style = []
+
+        def handle_message(*args):
+            observed_style.append(RAG_CONCISE_STYLE.get())
+            return {
+                "reply": "可以安排亲子活动。",
+                "analysis": {"intent": "valid"},
+                "side_effects": {},
+            }
+
+        with patch.object(api, "handle_customer_message", side_effect=handle_message):
+            response = self.client.post(
+                "/v1/chat",
+                json=self.payload(),
+                headers=self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(observed_style, [True])
 
     def test_pending_retry_reuses_reply_without_running_business_logic_twice(self):
         result = {"reply": "The transfer is available.", "analysis": {}, "side_effects": {}}

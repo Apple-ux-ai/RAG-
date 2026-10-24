@@ -45,7 +45,7 @@ def _load_env_file():
 _load_env_file()  # 启动时先加载 .env（必须在读取任何配置前调用）
 
 # 移植自 travel_im_auto 的纯逻辑大脑（广告/联系方式/路由/会话记忆），服务端统一调用
-from rag_delivery import RAG_SAFE_LOGGING
+from rag_delivery import RAG_CONCISE_STYLE, RAG_SAFE_LOGGING
 import im_core
 
 # ========= 配置项 =========
@@ -93,6 +93,12 @@ def _customer_answer_parts(text, has_contact, intent="valid", is_ad=False, invit
         body = suppress_contact_requests(body)
     if has_contact and not body and (text or "").strip():
         body = "您之前提供的耳关系方式已记下。"
+    if RAG_CONCISE_STYLE.get():
+        # The RAG channel should answer ordinary questions directly. Ask for contact
+        # details only when the customer explicitly requested a follow-up handoff.
+        closing = invitation if intent == "contact_handoff" and (text or "").strip() and not is_ad and should_solicit(
+            "", [], has_contact, intent) else ""
+        return body, closing
     closing = invitation if (text or "").strip() and not is_ad and should_solicit(
         "", [], has_contact, intent) else ""
     return body, closing
@@ -234,8 +240,8 @@ def _raw_faq_unsafe(text: str) -> bool:
 
 
 def _finalize_answer(text: str) -> str:
-    """清理换行/空白，并将答案控制在 MAX_ANSWER_LEN 字以内。
-    超出时优先在 MAX_ANSWER_LEN 字内寻找最近的句末标点（。！？）截断，
+    """清理换行/空白，并按当前渠道长度限制收束答案。
+    超出时优先在长度限制内寻找最近的句末标点（。！？）截断，
     找不到句末则硬截断并补省略号，避免出现被生硬切断、无结尾的句子。
     """
     if not text:
@@ -248,18 +254,19 @@ def _finalize_answer(text: str) -> str:
     text = re.sub(r'[\r\n]+', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     text = _sanitize_leak(text)
-    if len(text) > MAX_ANSWER_LEN:
+    max_answer_len = 80 if RAG_CONCISE_STYLE.get() else MAX_ANSWER_LEN
+    if len(text) > max_answer_len:
         cut = -1
         # 从临界位置向前找最近的句末标点
-        for i in range(min(len(text), MAX_ANSWER_LEN) - 1, -1, -1):
+        for i in range(min(len(text), max_answer_len) - 1, -1, -1):
             if text[i] in "。！？":
                 cut = i + 1
                 break
         if cut > 0:
             text = text[:cut]
         else:
-            # 150字内无句末：硬截断到 149 字并补省略号，保证总长度不超过 150
-            text = text[:MAX_ANSWER_LEN - 1] + "…"
+            # Hard-cap long answers while keeping the last character as an ellipsis.
+            text = text[:max_answer_len - 1] + "…"
     return text
 
 # ========== 目的地国家/地区识别 ==========
@@ -692,6 +699,14 @@ def generate_single_answer(sub_question: str, matched_faqs: list, banned_words: 
     """
     has_reference = bool(matched_faqs)
 
+    rag_style_rules = """
+【本渠道回复风格（优先于其他风格描述）】
+1. 像真人客服自然聊天，直接回答问题；“亲亲”可以自然使用，但不要每条都固定开头，也不要刻意堆叠称呼。
+2. 通常用一两句话、80字以内说清重点，不罗列景点或服务项目；只有客户明确要求详细介绍时才展开。
+3. 普通咨询只回答当前问题，不要主动索要联系方式或追加留资话术。客户明确要求定制师联系、提供联系方式或需要人工核实后续跟进时，再简短说明。
+4. 价格、房型等未确认信息只说需要核实，不猜测具体数字或承诺；不要为了称呼或介绍服务而补充与问题无关的话。
+"""
+
     # 违禁词约束：用规则描述，不直接传敏感词列表（避免触发千问平台内容审核）
     banned_constraint = """
 【内容合规规则】你的回答必须严格遵守以下要求：
@@ -711,6 +726,16 @@ def generate_single_answer(sub_question: str, matched_faqs: list, banned_words: 
 """
 
     if has_reference:
+        style_rules = rag_style_rules if RAG_CONCISE_STYLE.get() else """
+回复风格必须遵守以下规则：
+1. 开头直接用"亲亲~"加回答内容，不要说"关于您问的几个问题""为您解答""我来详细说明"这类废话前缀。
+2. 禁止使用任何 markdown 格式（不要用 **加粗**、## 标题、- 列表符号等）。
+3. 禁止使用任何数字序号（不要用 1. 2. 3.、一、二、三、①②③ 等任何编号形式），所有内容写成一段连贯流畅的自然语言，用"另外""还有""同时"等连接词过渡。
+4. 不要在结尾额外添加引导留联系方式的收尾语，收尾语会单独附在返回结果的末尾。
+5. 禁止编造不存在的信息。
+6. 回答要简洁，控制在150字以内，只保留最核心、最实用的信息，不要展开过多细节或罗列过多项目。
+"""
+        prompt_rules = f"{BIZ_RULES}\n{style_rules}" if RAG_CONCISE_STYLE.get() else f"{style_rules}\n{BIZ_RULES}"
         # 单条FAQ匹配：直接返回作者写好的原文，不让千问改写，避免乱加换行/收尾语
         if len(matched_faqs) == 1:
             raw_answer = matched_faqs[0]["answer"]
@@ -720,7 +745,7 @@ def generate_single_answer(sub_question: str, matched_faqs: list, banned_words: 
             if _raw_faq_unsafe(raw_answer) or not _faq_relevant(sub_question, raw_answer):
                 has_reference = False
                 matched_faqs = []
-            else:
+            elif not RAG_CONCISE_STYLE.get():
                 # 清理换行/空白并控制字数（多个空白/换行合并为一个空格，超长按句末截断）
                 clean_answer = _finalize_answer(raw_answer)
                 return {
@@ -734,14 +759,7 @@ def generate_single_answer(sub_question: str, matched_faqs: list, banned_words: 
         )
         system_prompt = f"""
 你是一名专业的旅行管家，专注服务度假旅行客户，请严格基于下面【参考资料】回答客户问题。回答内容要贴合旅游出行场景，不要用电商购物的通用话术（如"确认收货""发货""物流"等）。
-回复风格必须遵守以下规则：
-1. 开头直接用"亲亲~"加回答内容，不要说"关于您问的几个问题""为您解答""我来详细说明"这类废话前缀。
-2. 禁止使用任何 markdown 格式（不要用 **加粗**、## 标题、- 列表符号等）。
-3. 禁止使用任何数字序号（不要用 1. 2. 3.、一、二、三、①②③ 等任何编号形式），所有内容写成一段连贯流畅的自然语言，用"另外""还有""同时"等连接词过渡。
-4. 不要在结尾额外添加引导留联系方式的收尾语，收尾语会单独附在返回结果的末尾。
-5. 禁止编造不存在的信息。
-6. 回答要简洁，控制在150字以内，只保留最核心、最实用的信息，不要展开过多细节或罗列过多项目。
-        {BIZ_RULES}
+{prompt_rules}
         {banned_constraint}
 """
         user_prompt = f"""【参考资料】
@@ -750,8 +768,7 @@ def generate_single_answer(sub_question: str, matched_faqs: list, banned_words: 
 用户问题：{sub_question}
 """
     else:
-        system_prompt = f"""
-你是一名专业的旅行管家，专注服务度假旅行客户，下面没有参考资料，请用你自身的知识直接回答客户问题。回答内容要贴合旅游出行场景，不要用电商购物的通用话术（如"确认收货""发货""物流"等）。
+        style_rules = rag_style_rules if RAG_CONCISE_STYLE.get() else """
 回复风格必须遵守以下规则：
 1. 开头直接用"亲亲~"加回答内容，不要说"关于您问的几个问题""为您解答""我来详细说明"这类废话前缀。
 2. 禁止使用任何 markdown 格式（不要用 **加粗**、## 标题、- 列表符号等）。
@@ -759,7 +776,11 @@ def generate_single_answer(sub_question: str, matched_faqs: list, banned_words: 
 4. 不要在结尾额外添加引导留联系方式的收尾语，收尾语会单独附在返回结果的末尾。
 5. 回答要专业、友好、实用，体现电商客服的专业素养。
 6. 回答要简洁，控制在150字以内，只保留最核心、最实用的信息，不要展开过多细节或罗列过多项目。
-        {BIZ_RULES}
+"""
+        prompt_rules = f"{BIZ_RULES}\n{style_rules}" if RAG_CONCISE_STYLE.get() else f"{style_rules}\n{BIZ_RULES}"
+        system_prompt = f"""
+你是一名专业的旅行管家，专注服务度假旅行客户，下面没有参考资料，请用你自身的知识直接回答客户问题。回答内容要贴合旅游出行场景，不要用电商购物的通用话术（如"确认收货""发货""物流"等）。
+{prompt_rules}
         {banned_constraint}
 """
         user_prompt = f"用户问题：{sub_question}"

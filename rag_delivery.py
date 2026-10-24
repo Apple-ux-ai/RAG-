@@ -15,6 +15,7 @@ from typing import Callable, Iterator
 _PROCESSING_LEASE_SECONDS = 600
 _RECORD_RETENTION_SECONDS = 24 * 60 * 60
 RAG_SAFE_LOGGING = ContextVar("rag_safe_logging", default=False)
+RAG_CONCISE_STYLE = ContextVar("rag_concise_style", default=False)
 
 
 @dataclass(frozen=True)
