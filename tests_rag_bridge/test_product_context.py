@@ -78,15 +78,16 @@ class RagProductContextTests(unittest.TestCase):
             "create",
             return_value=completion,
         ) as model_call:
-            customer_service.parse_product(title)
+            result = customer_service.parse_product(title)
 
         messages = model_call.call_args.kwargs["messages"]
         self.assertEqual([item["role"] for item in messages], ["system", "user"])
         self.assertNotIn(title, messages[0]["content"])
         self.assertIn(title, messages[1]["content"])
+        self.assertEqual(result, {"destinations": ["Bali"], "duration": None})
 
     def test_parse_product_rejects_extracted_facts_absent_from_title(self):
-        title = "巴厘岛+科莫多6日5晚私家团"
+        title = "Bali family package"
         completion = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(
                 content='{"destinations":["马尔代夫"],"duration":"99日游"}'
@@ -99,10 +100,23 @@ class RagProductContextTests(unittest.TestCase):
         ):
             result = customer_service.parse_product(title)
 
-        self.assertEqual(result, {
-            "destinations": ["巴厘岛", "科莫多"],
-            "duration": "6日5晚",
-        })
+        self.assertEqual(result, {"destinations": [], "duration": None})
+
+    def test_parse_product_rejects_partial_uncatalogued_destination_match(self):
+        title = "Komodo family tour"
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"destinations":["Kom"],"duration":null}'
+            ))]
+        )
+        with patch.object(
+            customer_service.client.chat.completions,
+            "create",
+            return_value=completion,
+        ):
+            result = customer_service.parse_product(title)
+
+        self.assertEqual(result, {"destinations": [], "duration": None})
 
     def test_parse_product_replaces_partial_model_facts_with_complete_catalog_facts(self):
         title = "巴厘岛+科莫多6日5晚私家团"

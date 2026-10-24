@@ -1211,6 +1211,31 @@ def _parse_product_fallback(product_name: str) -> dict:
     return {"destinations": dests, "duration": dur}
 
 
+def _is_complete_title_destination(candidate: str, product_name: str) -> bool:
+    """Reject model destinations that are only a fragment of a longer title word."""
+    candidate = (candidate or "").strip()
+    title = product_name or ""
+    if not candidate:
+        return False
+    has_latin_or_digit = bool(re.search(r"[a-z0-9]", candidate, re.IGNORECASE))
+    has_cjk = bool(re.search(r"[\u3400-\u9fff]", candidate))
+    for match in re.finditer(re.escape(candidate), title, re.IGNORECASE):
+        before = title[match.start() - 1] if match.start() else ""
+        after = title[match.end()] if match.end() < len(title) else ""
+        if has_latin_or_digit and (
+            re.fullmatch(r"[a-z0-9]", before, re.IGNORECASE)
+            or re.fullmatch(r"[a-z0-9]", after, re.IGNORECASE)
+        ):
+            continue
+        if has_cjk and (
+            re.fullmatch(r"[\u3400-\u9fff]", before)
+            or re.fullmatch(r"[\u3400-\u9fff]", after)
+        ):
+            continue
+        return True
+    return False
+
+
 def parse_product(product_name: str) -> dict:
     """Extract only product facts grounded in the supplied, untrusted title."""
     if not product_name or not product_name.strip():
@@ -1241,8 +1266,7 @@ def parse_product(product_name: str) -> dict:
             if not isinstance(value, str):
                 continue
             candidate = value.strip()
-            normalized_candidate = re.sub(r"\s+", "", candidate).casefold()
-            if candidate and normalized_candidate in normalized_title:
+            if _is_complete_title_destination(candidate, pn):
                 destinations.append(candidate)
 
         raw_duration = data.get("duration")
