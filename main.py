@@ -354,45 +354,99 @@ def detect_country(text: str):
     return None
 
 
+_CHINA_DOMESTIC_REGIONS = (
+    "北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林",
+    "黑龙江", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南",
+    "湖北", "湖南", "广东", "海南", "四川", "贵州", "云南", "陕西",
+    "甘肃", "青海", "台湾", "内蒙古", "广西", "西藏", "宁夏", "新疆",
+    "香港", "澳门",
+)
+
+
 def _classify_departure_location(city: str) -> str:
     """根据当前商品卡片的集合地，分类国内、境外或未知。"""
     if not isinstance(city, str):
         return "unknown"
     normalized = re.sub(r"[\s,，。;；:：/\\\-()（）【】\[\]]+", "", city).strip()
+    for prefix in ("中华人民共和国", "中国"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
     if not normalized:
         return "unknown"
 
-    domestic_candidate = re.sub(
-        r"(?:特别行政区|自治区|自治州|地区|市|省|盟)$", "", normalized
+    admin_suffixes = (
+        "特别行政区", "维吾尔自治区", "壮族自治区", "回族自治区",
+        "自治区", "自治州", "地区", "市", "省", "盟",
     )
-    if domestic_candidate in im_core.CITY_AREA_CODE_MAP:
+    domestic_candidate = normalized
+    for suffix in admin_suffixes:
+        if domestic_candidate.endswith(suffix):
+            domestic_candidate = domestic_candidate[:-len(suffix)]
+            break
+
+    city_names = im_core.CITY_AREA_CODE_MAP
+    if domestic_candidate in city_names:
         return "domestic"
+    if domestic_candidate in _CHINA_DOMESTIC_REGIONS:
+        return "domestic"
+
+    for region in _CHINA_DOMESTIC_REGIONS:
+        if domestic_candidate.startswith(region):
+            remainder = domestic_candidate[len(region):]
+            for suffix in admin_suffixes:
+                if remainder.startswith(suffix):
+                    remainder = remainder[len(suffix):]
+                    break
+            for suffix in ("市", "省", "地区", "自治州", "盟"):
+                if remainder.endswith(suffix):
+                    remainder = remainder[:-len(suffix)]
+                    break
+            if remainder in city_names:
+                return "domestic"
+            # A recognized China region prefix is not evidence for a foreign country
+            # embedded in its name (for example, “内蒙古” contains “蒙古”).
+            return "unknown"
+
     if detect_country(normalized):
         return "overseas"
     return "unknown"
 
 
 def _fee_inclusion_reply(message: str, departure_city: str) -> str | None:
-    """只处理明确的全包或机票包含问题，并按集合地给出简短固定答复。"""
+    """只处理明确询问费用全包或机票是否包含的问题。"""
     text = re.sub(r"\s+", "", message or "")
     if not text:
         return None
 
-    question_marker = bool(re.search(
-        r"[?？]|(?:吗|么|呢|是否|是不是|有没有|会不会|要不要|需不需要|"
-        r"包不包|含不含|算不算|还是)", text
-    ))
-    asks_all_inclusive = question_marker and bool(re.search(
-        r"(?:全包|全含|所有费用.{0,6}(?:包|含)|全部费用.{0,6}(?:包|含)|"
-        r"费用.{0,6}(?:都|全部|全).{0,2}(?:包|含))", text
-    ))
-    asks_airfare_inclusion = question_marker and "机票" in text and bool(re.search(
-        r"(?:机票.{0,8}(?:包不包|包吗|含不含|含吗|是否包|是否含|是否包含|"
-        r"是否包括|包含|包括|自理|另行购买|自行购买|自己买|算不算|算在|在内)|"
-        r"(?:包不包|包吗|含不含|含吗|是否包含|是否包括|包含|包括|含有|含|需要自理|"
-        r"自理|另行购买|自行购买|自己买|算不算|算在|在内).{0,8}机票)",
+    # 具体问酒店、行李、餐饮等项目时，固定答复无法覆盖问题，继续走常规 RAG。
+    other_inclusion_items = (
+        "酒店", "住宿", "托运", "行李", "餐饮", "餐食", "门票", "景点",
+        "接送", "签证", "保险", "导游",
+    )
+    if any(item in text for item in other_inclusion_items):
+        return None
+
+    fee_scope = r"(?:价格|价钱|费用|总价|总费用|所有费用|全部费用)"
+    full_inclusion = (
+        r"(?:全包|全含|全包含|都包|都含|都包含|都包括|全部包|全部含|"
+        r"全部包含|全部包括|(?:包含|包括|包|含)(?:在内)?)"
+    )
+    asks_all_inclusive = bool(re.search(
+        rf"{fee_scope}.{{0,6}}(?:(?:是否|是不是|有没有).{{0,4}}{full_inclusion}|"
+        rf"{full_inclusion}(?:了)?(?:吗|么|呢|[?？]))",
         text,
     ))
+    airfare_patterns = (
+        r"机票(?:包不包|含不含|(?:包|含)(?:了)?(?:吗|么|呢|[?？])|"
+        r"是否(?:包含|包括|包|含)|(?:包含|包括)(?:了)?(?:在内)?(?:吗|么|呢|[?？])|"
+        r"(?:需要|需不需要|要不要)自理(?:吗|么|呢|[?？])|"
+        r"(?:自己|自行|另行)?(?:买|购买)(?:吗|么|呢|[?？])|"
+        r"(?:要不要|需不需要)(?:自己|自行|另行)?(?:买|购买))",
+        r"(?:包不包|含不含|是否(?:包含|包括|包|含)).{0,4}机票(?:吗|么|呢|[?？])?",
+        r"(?:包|含|包含|包括).{0,4}机票(?:吗|么|呢|[?？])",
+    )
+    asks_airfare_inclusion = any(re.search(pattern, text) for pattern in airfare_patterns)
     if not (asks_all_inclusive or asks_airfare_inclusion):
         return None
 
