@@ -93,6 +93,8 @@ def _customer_answer_parts(text, has_contact, intent="valid", is_ad=False, invit
         body = suppress_contact_requests(body)
     if has_contact and not body and (text or "").strip():
         body = "您之前提供的耳关系方式已记下。"
+    if intent == "fee_inclusion":
+        return body, ""
     if RAG_CONCISE_STYLE.get():
         # The RAG channel should answer ordinary questions directly. Ask for contact
         # details only when the customer explicitly requested a follow-up handoff.
@@ -350,6 +352,57 @@ def detect_country(text: str):
         if region in text:
             return country
     return None
+
+
+def _classify_departure_location(city: str) -> str:
+    """根据当前商品卡片的集合地，分类国内、境外或未知。"""
+    if not isinstance(city, str):
+        return "unknown"
+    normalized = re.sub(r"[\s,，。;；:：/\\\-()（）【】\[\]]+", "", city).strip()
+    if not normalized:
+        return "unknown"
+
+    domestic_candidate = re.sub(
+        r"(?:特别行政区|自治区|自治州|地区|市|省|盟)$", "", normalized
+    )
+    if domestic_candidate in im_core.CITY_AREA_CODE_MAP:
+        return "domestic"
+    if detect_country(normalized):
+        return "overseas"
+    return "unknown"
+
+
+def _fee_inclusion_reply(message: str, departure_city: str) -> str | None:
+    """只处理明确的全包或机票包含问题，并按集合地给出简短固定答复。"""
+    text = re.sub(r"\s+", "", message or "")
+    if not text:
+        return None
+
+    question_marker = bool(re.search(
+        r"[?？]|(?:吗|么|呢|是否|是不是|有没有|会不会|要不要|需不需要|"
+        r"包不包|含不含|算不算|还是)", text
+    ))
+    asks_all_inclusive = question_marker and bool(re.search(
+        r"(?:全包|全含|所有费用.{0,6}(?:包|含)|全部费用.{0,6}(?:包|含)|"
+        r"费用.{0,6}(?:都|全部|全).{0,2}(?:包|含))", text
+    ))
+    asks_airfare_inclusion = question_marker and "机票" in text and bool(re.search(
+        r"(?:机票.{0,8}(?:包不包|包吗|含不含|含吗|是否包|是否含|是否包含|"
+        r"是否包括|包含|包括|自理|另行购买|自行购买|自己买|算不算|算在|在内)|"
+        r"(?:包不包|包吗|含不含|含吗|是否包含|是否包括|包含|包括|含有|含|需要自理|"
+        r"自理|另行购买|自行购买|自己买|算不算|算在|在内).{0,8}机票)",
+        text,
+    ))
+    if not (asks_all_inclusive or asks_airfare_inclusion):
+        return None
+
+    city = departure_city.strip() if isinstance(departure_city, str) else ""
+    location = _classify_departure_location(city)
+    if location == "domestic":
+        return "亲亲，这个方案含机票，行程未包含的其他费用需要自理。"
+    if location == "overseas":
+        return f"亲亲，这个行程在{city}集合，往返机票需要您自理，其他未包含的费用也需要自理。"
+    return "亲亲，这个费用不是全包的，机票是否包含要以集合地和行程说明为准，未包含的其他费用需要自理。"
 
 # 签证/证件相关话题关键词
 VISA_TOPICS = ("签证", "护照", "落地签", "电子签", "证件")
@@ -2273,6 +2326,19 @@ def _handle_customer_message(user, product_id, product_name, message, history=No
                                     product_id, product_name,
                                     stored_contacts=_saved)
         return {"reply": reply, "analysis": analysis, "side_effects": side}
+
+    # 费用包含类问题按商品卡片的当前集合地确定性回答，不走模型改写。
+    current_departure_city = (
+        product_context.get("departure_city", "")
+        if isinstance(product_context, dict) else ""
+    )
+    fee_reply = _fee_inclusion_reply(message, current_departure_city)
+    if fee_reply is not None:
+        analysis["intent"] = "fee_inclusion"
+        analysis["service_category"] = "费用包含"
+        side = im_core.push_and_log(user, message, analysis, fee_reply,
+                                    product_id, product_name, stored_contacts=_saved)
+        return {"reply": fee_reply, "analysis": analysis, "side_effects": side}
 
     # ④ 默认：走千问 RAG 生成回复
     faq_list, banned_words = _get_faq_banned()
