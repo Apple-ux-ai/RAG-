@@ -96,6 +96,62 @@ class RagChatApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(observed_style, [True])
 
+    def test_rag_product_context_is_forwarded_to_handler(self):
+        product_context = {
+            "product_id": "70793312",
+            "product_name": "巴厘岛+科莫多6日5晚私家团",
+            "departure_city": "巴厘岛",
+            "product_label": "私家团",
+        }
+        result = {"reply": "可以帮您核实。", "analysis": {"intent": "valid"}}
+
+        with patch.object(api, "handle_customer_message", return_value=result) as handler:
+            response = self.client.post(
+                "/v1/chat",
+                json=self.payload(message_id="product-context-1", product_context=product_context),
+                headers=self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(handler.call_args.args[1:4], (
+            product_context["product_id"],
+            product_context["product_name"],
+            self.payload()["text"],
+        ))
+        self.assertEqual(handler.call_args.kwargs["product_context"], product_context)
+
+    def test_rag_product_context_rejects_unknown_and_overlong_fields(self):
+        result = {"reply": "可以帮您核实。", "analysis": {"intent": "valid"}}
+        valid_context = {"product_name": "巴厘岛+科莫多6日5晚私家团"}
+
+        with patch.object(api, "handle_customer_message", return_value=result) as handler:
+            accepted = self.client.post(
+                "/v1/chat",
+                json=self.payload(message_id="product-context-valid", product_context=valid_context),
+                headers=self.headers,
+            )
+            extra_field = self.client.post(
+                "/v1/chat",
+                json=self.payload(
+                    message_id="product-context-extra",
+                    product_context={**valid_context, "order_id": "must-not-pass"},
+                ),
+                headers=self.headers,
+            )
+            oversized = self.client.post(
+                "/v1/chat",
+                json=self.payload(
+                    message_id="product-context-long",
+                    product_context={"product_name": "x" * 301},
+                ),
+                headers=self.headers,
+            )
+
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(extra_field.status_code, 422, extra_field.text)
+        self.assertEqual(oversized.status_code, 422, oversized.text)
+        self.assertEqual(handler.call_count, 1)
+
     def test_pending_retry_reuses_reply_without_running_business_logic_twice(self):
         result = {"reply": "The transfer is available.", "analysis": {}, "side_effects": {}}
         with patch.object(api, "handle_customer_message", return_value=result) as handler:

@@ -225,10 +225,22 @@ class RagHistoryItem(BaseModel):
         return value
 
 
+class RagProductContext(BaseModel):
+    """Whitelisted product-card facts supplied by the IM adapter."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    product_id: str = Field(default="", max_length=128)
+    product_name: str = Field(default="", max_length=300)
+    departure_city: str = Field(default="", max_length=128)
+    product_label: str = Field(default="", max_length=200)
+
+
 class RagChatRequest(_RagIdentityRequest):
     text: str = Field(min_length=1, max_length=2000)
     history: list[RagHistoryItem] = Field(default_factory=list, max_length=12)
     occurred_at: Optional[str] = Field(default=None, max_length=64)
+    product_context: Optional[RagProductContext] = None
 
     @field_validator("text")
     @classmethod
@@ -462,13 +474,28 @@ def rag_chat(
         safe_log_token = RAG_SAFE_LOGGING.set(True)
         concise_style_token = RAG_CONCISE_STYLE.set(True)
         try:
-            result = handle_customer_message(
-                _rag_user_key(scope),
-                "",
-                "",
-                req.text,
-                history,
-            )
+            product_context = (req.product_context.model_dump()
+                               if req.product_context is not None else None)
+            product_id = (product_context or {}).get("product_id", "")
+            product_name = (product_context or {}).get("product_name", "")
+            has_product_context = bool(product_context and any(product_context.values()))
+            if has_product_context:
+                result = handle_customer_message(
+                    _rag_user_key(scope),
+                    product_id,
+                    product_name,
+                    req.text,
+                    history,
+                    product_context=product_context,
+                )
+            else:
+                result = handle_customer_message(
+                    _rag_user_key(scope),
+                    "",
+                    "",
+                    req.text,
+                    history,
+                )
         finally:
             RAG_CONCISE_STYLE.reset(concise_style_token)
             RAG_SAFE_LOGGING.reset(safe_log_token)

@@ -252,7 +252,7 @@ python -m uvicorn api:app --host 127.0.0.1 --port 8010
 
 ### 5.1 POST `/v1/chat`
 
-请求头必须带 `Authorization: Bearer <RAG_CHAT_TOKEN>`。消息 ID、客户 ID、会话 ID 和渠道均必填；`text` 必须是非空字符串且最多 2000 字。`history` 最多 12 条，每条只传 `role`、`content`，内容最多 1200 字。历史角色会映射为 `user` 或 `assistant`。
+请求头必须带 `Authorization: Bearer <RAG_CHAT_TOKEN>`。消息 ID、客户 ID、会话 ID 和渠道均必填；`text` 必须是非空字符串且最多 2000 字。`history` 最多 12 条，每条只传 `role`、`content`，内容最多 1200 字。历史角色会映射为 `user` 或 `assistant`。`product_context` 可选，只接受 `product_id`（≤128 字）、`product_name`（≤300 字）、`departure_city`（≤128 字）、`product_label`（≤200 字）；其他字段会被拒绝。缺少该字段时沿用旧请求行为。
 
 ```json
 {
@@ -265,9 +265,17 @@ python -m uvicorn api:app --host 127.0.0.1 --port 8010
     {"role": "user", "content": "We are traveling to Bali."},
     {"role": "assistant", "content": "What dates are you planning?"}
   ],
+  "product_context": {
+    "product_id": "example-product-001",
+    "product_name": "巴厘岛+科莫多6日5晚私家团",
+    "departure_city": "巴厘岛",
+    "product_label": "私家团"
+  },
   "occurred_at": "2026-10-24T10:00:00+00:00"
 }
 ```
+
+产品卡片字段表示当前浏览的产品，不表示已下单；RAG 会把商品名称中的目的地/时长与单独标注的出发城市作为上下文。没有提供的出发日期或同行人数不作推测，价格和包含项目以知识库内容为准。
 
 首次处理返回 `action`、`reply`、`send_reply`、`trace_id` 和 `duplicate=false`。IM 只有在 `send_reply=true` 且回复非空时才发送。生成成功后回复会先保存为待确认状态；相同消息在 ACK 前重试会返回同一条回复，并带 `duplicate=true`、`send_reply=true`，发送端应以 `send_reply` 为准，允许重试发送。正在生成时的并发重复请求不会拿到发送许可。
 
