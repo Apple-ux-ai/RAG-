@@ -1185,29 +1185,29 @@ def _extract_json(text: str) -> str:
 
 
 def _parse_product_fallback(product_name: str) -> dict:
-    """千问不可用时的正则兜底：按分隔符拆多目的地 + 提取行程天数。"""
-    pn = (product_name or "").strip()
-    raw_parts = re.split(r"[+、，,\s]+", pn)
+    """从商品标题中提取目录内的完整目的地名和完整行程天数。"""
+    pn = re.sub(r"\s+", "", (product_name or "").strip())
     dests = []
-    for p in raw_parts:
-        p = p.strip()
-        if not p:
-            continue
-        # 去掉目的地末尾可能粘连的行程天数（如 '薄荷岛8日7晚' -> '薄荷岛'）
-        p = re.sub(r"\d+\s*(?:日|天|晚|游).*$", "", p).strip()
-        if p and not re.fullmatch(r"\d+\s*[日天晚游]", p):
-            dests.append(p)
+    destination_names = sorted(set(_destination_names()), key=len, reverse=True)
+    if pn and destination_names:
+        pattern = "|".join(re.escape(name) for name in destination_names if name)
+        if pattern:
+            # 目录匹配只返回已知目的地，不把“巴厘岛亲子游”之类的营销词
+            # 整段误当成目的地；长名称优先也会避免巴厘岛被截成“巴厘”。
+            dests = list(dict.fromkeys(match.group(0) for match in re.finditer(pattern, pn)))
+
     dur = None
-    m = re.search(r"(\d+)\s*日\s*(\d+)\s*晚", pn)
+    m = re.search(r"(\d+)日(\d+)晚", pn)
     if m:
         dur = f"{m.group(1)}日{m.group(2)}晚"
-    elif re.search(r"(\d+)\s*天\s*(\d+)\s*晚", pn):
-        m = re.search(r"(\d+)\s*天\s*(\d+)\s*晚", pn)
-        dur = f"{m.group(1)}天{m.group(2)}晚"
     else:
-        m = re.search(r"(\d+)\s*(?:日|天)游", pn)
+        m = re.search(r"(\d+)天(\d+)晚", pn)
         if m:
-            dur = f"{m.group(1)}日游"
+            dur = f"{m.group(1)}天{m.group(2)}晚"
+        else:
+            m = re.search(r"(\d+)(?:日|天)游", pn)
+            if m:
+                dur = f"{m.group(1)}日游"
     return {"destinations": dests, "duration": dur}
 
 
@@ -1232,6 +1232,7 @@ def parse_product(product_name: str) -> dict:
         )
         data = json.loads(_extract_json(resp.choices[0].message.content))
         normalized_title = re.sub(r"\s+", "", pn).casefold()
+        fallback = _parse_product_fallback(pn)
         raw_destinations = data.get("destinations") or []
         if not isinstance(raw_destinations, list):
             raw_destinations = [raw_destinations]
@@ -1252,12 +1253,11 @@ def parse_product(product_name: str) -> dict:
             if normalized_duration in normalized_title:
                 duration = candidate_duration
 
-        fallback = None
-        if not destinations or not duration:
-            fallback = _parse_product_fallback(pn)
-        if not destinations:
+        # 若目录可识别出标题中的目的地，以完整目录结果为准。模型漏掉的
+        # 行程地或只返回“6日”这样的子串都不能覆盖完整商品事实。
+        if fallback["destinations"]:
             destinations = fallback["destinations"]
-        if not duration:
+        if fallback["duration"]:
             duration = fallback["duration"]
         return {"destinations": destinations, "duration": duration}
     except Exception as e:

@@ -104,6 +104,39 @@ class RagProductContextTests(unittest.TestCase):
             "duration": "6日5晚",
         })
 
+    def test_parse_product_replaces_partial_model_facts_with_complete_catalog_facts(self):
+        title = "巴厘岛+科莫多6日5晚私家团"
+        completion = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"destinations":["巴厘岛"],"duration":"6日"}'
+            ))]
+        )
+        with patch.object(
+            customer_service.client.chat.completions,
+            "create",
+            return_value=completion,
+        ):
+            result = customer_service.parse_product(title)
+
+        self.assertEqual(result, {
+            "destinations": ["巴厘岛", "科莫多"],
+            "duration": "6日5晚",
+        })
+
+    def test_parse_product_fallback_drops_marketing_suffix_from_destination(self):
+        title = "巴厘岛亲子游6日5晚"
+        with patch.object(
+            customer_service.client.chat.completions,
+            "create",
+            side_effect=RuntimeError("synthetic model outage"),
+        ):
+            result = customer_service.parse_product(title)
+
+        self.assertEqual(result, {
+            "destinations": ["巴厘岛"],
+            "duration": "6日5晚",
+        })
+
 
 if __name__ == "__main__":
     unittest.main()
