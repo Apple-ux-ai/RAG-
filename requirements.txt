@@ -1,0 +1,11 @@
+# Web 框架 / ASGI 服务
+fastapi>=0.110
+uvicorn[standard]>=0.27
+gunicorn>=21.2          # 生产部署可选：gunicorn -k uvicorn.workers.UvicornWorker api:app
+
+# 数据校验
+pydantic>=2.5
+
+# LLM 客户端（main.py / im_core.py 用 OpenAI SDK）
+openai>=1.12
+requests>=2.31         # im_core.py / chat.py 用
